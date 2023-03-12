@@ -135,15 +135,11 @@ func main() {
 	fmt.Println(schemaObject)
 	fmt.Println(displaySchema(&schemaObject, 0))
 
-	avro := avroSchemaOfObject(&schemaObject)
-
-	data, err := json.Marshal(avro)
+	avrox, err := buildAvroSchema(&schemaObject)
 	if err != nil {
 		return
 	}
-	fmt.Println(string(data))
-	avrox, err := buildAvroSchema(&schemaObject)
-	data, err = json.Marshal(avrox)
+	data, err := json.Marshal(avrox)
 	if err != nil {
 		return
 	}
