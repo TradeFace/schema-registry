@@ -2,14 +2,20 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type Schema struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty"`
 	Name      string             `bson:"name"`
 	Version   int                `bson:"version"`
-	Schema    string             `bson:"schema"`
+	Schema    bson.M             `bson:"schema"`
 	CreatedAt time.Time          `bson:"created_at"`
 	UpdatedAt time.Time          `bson:"updated_at"`
 }
@@ -23,15 +29,38 @@ func NewSchemaService(client *mongo.Client, dbName, collectionName string) *Sche
 	return &SchemaService{collection}
 }
 
-func (s *SchemaService) Create(schema *Schema) (*Schema, error) {
+func (s *SchemaService) Create(schema *Schema, schemaBytes []byte) (*Schema, error) {
+
+	// Check if a schema with the same name and version already exists
+	var existingSchema Schema
+	err := s.collection.FindOne(
+		context.Background(),
+		bson.M{"name": schema.Name},
+	).Decode(&existingSchema)
+	if err == nil {
+		return nil, fmt.Errorf("schema with name %s already exists", schema.Name)
+	} else if err != mongo.ErrNoDocuments {
+		return nil, err
+	}
+
 	schema.CreatedAt = time.Now()
 	schema.UpdatedAt = time.Now()
 	schema.Version = 1
+
+	// Convert incoming JSON string to bson.M document
+	var schemaDoc bson.M
+	err = bson.UnmarshalExtJSON(schemaBytes, true, &schemaDoc)
+	if err != nil {
+		return nil, err
+	}
+	schema.Schema = schemaDoc
+
 	res, err := s.collection.InsertOne(context.Background(), schema)
 	if err != nil {
 		return nil, err
 	}
 	schema.ID = res.InsertedID.(primitive.ObjectID)
+
 	return schema, nil
 }
 
@@ -67,17 +96,44 @@ func (s *SchemaService) FindByID(id string) (*Schema, error) {
 	return schema, nil
 }
 
-func (s *SchemaService) Update(schema *Schema) error {
+func (s *SchemaService) FindByName(name string) (*Schema, error) {
+	opts := options.FindOne().SetSort(bson.M{"version": -1})
+	schema := &Schema{}
+	err := s.collection.FindOne(context.Background(), bson.M{"name": name}, opts).Decode(schema)
+	if err != nil {
+		return nil, err
+	}
+	return schema, nil
+}
+
+func (s *SchemaService) FindByNameAndVersion(name string, version int) (*Schema, error) {
+	query := bson.M{
+		"name":    name,
+		"version": version,
+	}
+	schema := &Schema{}
+	err := s.collection.FindOne(context.Background(), query).Decode(schema)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, fmt.Errorf("schema with name '%s' and version '%d' not found", name, version)
+		}
+		return nil, err
+	}
+	return schema, nil
+}
+
+func (s *SchemaService) Update(schema *Schema) (*Schema, error) {
+	// We are not actually updating, we insert the schema with a higher version number
+	// Unset the ID to force insertion of a new document
+	schema.ID = primitive.NilObjectID
 	schema.UpdatedAt = time.Now()
-	filter := bson.M{"_id": schema.ID}
-	update := bson.M{"$set": bson.M{
-		"name":       schema.Name,
-		"version":    schema.Version,
-		"schema":     schema.Schema,
-		"updated_at": schema.UpdatedAt,
-	}}
-	_, err := s.collection.UpdateOne(context.Background(), filter, update)
-	return err
+	schema.Version++
+	res, err := s.collection.InsertOne(context.Background(), schema)
+	if err != nil {
+		return nil, err
+	}
+	schema.ID = res.InsertedID.(primitive.ObjectID)
+	return schema, nil
 }
 
 func (s *SchemaService) Delete(id string) error {
